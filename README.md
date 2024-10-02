@@ -43,11 +43,11 @@ module "vsphere_cluster" {
   worker_disk_size     = 30                         # Disko dydis (gigabaitais) worker nodes
 
   # Network configuration
-  gateway              = "192.168.1.254"              # Gateway IP for the VMs
-  domain               = "my.domain"         # Domain name for the VMs
-  subnet_cidr           = "192.168.1.0/24"
-  cluster_cidr          = "10.20.30.0/24"
-  vip_address           = "192.168.2.1"
+  gateway               = "192.168.1.254"
+  domain                = "my.domain"
+  subnet_cidr           = "192.168.1.0/24" # vSphere vlan'o potinklis
+  cluster_cidr          = "10.20.30.0/24"  # kubernetes klasterio vidinis CIDR
+  vip_address           = "192.168.2.1"    # Load Balancer VIP adresas
 }
 
 
