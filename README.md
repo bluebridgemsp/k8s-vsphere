@@ -13,7 +13,7 @@ Terraform projekto `main.tf` failo pavyzdys
 module "vsphere_cluster" {
   source = "git::https://github.com/bluebridgemsp/k8s-vsphere.git"
 
-  # vSphere configuration
+  # vSphere konfiguracija
   vsphere_server        = "CHANGE_ME"
   vsphere_user          = "CHANGE_ME"
   vsphere_password      = "CHANGE_ME"
@@ -21,8 +21,9 @@ module "vsphere_cluster" {
   datastore_name        = "CHANGE_ME"
   vsphere_resource_pool = "CHANGE_ME"
   vsphere_cluster_name  = "CHANGE_ME"              # "vSphere Compute Cluster" pavadinimas
+
+  # Kubernetes konfiguracija
   cluster_name          = "my_vsphere cluster"     # Kubernetes klasterio pavadinimas
-  network_name          = "VLAN_1"
   master_ips = [
     "192.168.1.1",  # Pagrindinis master node
     "192.168.50.2"  # papildomi klasterio controllers
@@ -34,7 +35,7 @@ module "vsphere_cluster" {
     # ...
   ]
 
-  # VM configuration
+  # VM konfiguracija
   cpus                 = 2                          # CPU kiekis master nodes
   worker_cpus          = 2                          # CPU kiekis worker nodes
   memory               = 4096                       # Atmintis (megabaitais) master nodes
@@ -42,12 +43,13 @@ module "vsphere_cluster" {
   disk_size            = 20                         # Disko dydis (gigabaitais) master nodes
   worker_disk_size     = 30                         # Disko dydis (gigabaitais) worker nodes
 
-  # Network configuration
+  # Tinklo konfiguracija
   gateway               = "192.168.1.254"
   domain                = "my.domain"
   subnet_cidr           = "192.168.1.0/24" # vSphere vlan'o potinklis
   cluster_cidr          = "10.20.30.0/24"  # kubernetes klasterio vidinis CIDR
   vip_address           = "192.168.2.1"    # Load Balancer VIP adresas
+  network_name          = "VLAN_1"
 }
 
 
