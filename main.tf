@@ -79,6 +79,7 @@ locals {
       ip_address = ip
     }
   }
+  vip_address = var.vip_address != "" ? var.vip_address : local.main_master.ip_address
 }
 
 

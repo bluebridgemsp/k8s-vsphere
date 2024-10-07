@@ -70,7 +70,8 @@ variable "cluster_cidr" {
 
 variable "vip_address" {
   description = "your load balancers VIP address"
-  type    = string
+  type        = string
+  default     = ""
 }
 
 variable "template_name" {

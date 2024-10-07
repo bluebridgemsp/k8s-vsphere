@@ -5,7 +5,7 @@
 ---
 ## VSPHERE reikalavimai
 * VLAN su interneto prieiga
-* Sudiegtas load balancer (Su statiniu VIP adresu ir pool su nustatytais master nodes IP adresais)
+* (Nebūtina) Sudiegtas load balancer (Su statiniu VIP adresu ir pool su nustatytais master nodes IP adresais)
 ## Naudojimas
 ---
 Terraform projekto `main.tf` failo pavyzdys
@@ -26,12 +26,12 @@ module "vsphere_cluster" {
   cluster_name          = "my_vsphere cluster"     # Kubernetes klasterio pavadinimas
   master_ips = [
     "192.168.1.1",  # Pagrindinis master node
-    "192.168.50.2"  # papildomi klasterio controllers
+    "192.168.1.2"  # papildomas klasterio controllers
     # ...
   ]
   worker_ips = [
-    "192.168.50.10",  # Worker 1
-    "192.168.50.11"   # Worker 2
+    "192.168.1.10",  # Worker 1
+    "192.168.1.11"   # Worker 2
     # ...
   ]
 
@@ -48,7 +48,7 @@ module "vsphere_cluster" {
   domain                = "my.domain"
   subnet_cidr           = "192.168.1.0/24" # vSphere vlan'o potinklis
   cluster_cidr          = "10.20.30.0/24"  # kubernetes klasterio vidinis CIDR
-  vip_address           = "192.168.2.1"    # Load Balancer VIP adresas
+  vip_address           = "192.168.1.1"    # Load Balancer VIP adresas (nebūtina, nenurodžius bus sukonfiguruota su pagrindinio master node IP adresu)
   network_name          = "VLAN_1"
 }
 
