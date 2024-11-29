@@ -44,9 +44,10 @@ ufw disable
 snap install go --classic
 
 echo "### Saving ssh keys"
-sudo echo "${public_ssh_key}" >> /root/.ssh/authorized_keys
+sudo echo "${public_ssh_key}" > /root/.ssh/authorized_keys
 sudo echo "${private_ssh_key}" > /root/.ssh/id_rsa
 sudo chmod 600 /root/.ssh/id_rsa
+sudo systemctl restart ssh
 
 apt update
 apt full-upgrade -y
@@ -77,10 +78,13 @@ sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/con
 echo "### Restarting containerd"
 sudo systemctl restart containerd
 sudo systemctl enable containerd
+apt-get install -y apt-transport-https ca-certificates curl gnupg
 echo "### Adding kubernetes repo key"
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.27/deb/Release.key | sudo gpg --dearmour -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 echo "### Adding kubernetes repo"
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.27/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo chmod 644 /etc/apt/sources.list.d/kubernetes.list   # helps tools such as command-not-found to work correctly
 echo "### Installing kubernetes"
 sudo apt-get update
 sudo apt-get install -y kubelet kubeadm kubectl
@@ -96,9 +100,15 @@ if [[ "$ROLE" == "main_master" ]]; then
   echo "### Generate join command file"
   kubeadm token create --print-join-command | sudo tee $JOIN_COMMAND_FILE
 
+  echo  "### Installing antrea"
+  kubectl apply -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/yamls/antrea.yml
+
+  echo "### Restarting kubelet"
+  sudo systemctl restart kubelet.service
+
 fi
 
-if [[ "$ROLE" == "controller" ]]; then
+if [[ "$ROLE" == "master" ]]; then
   if ssh "$SERVER_USER@$MAIN_MASTER" "[[ -f \"$KEY_FILE\" ]] && [[ \$(find \"$KEY_FILE\" -mmin -120 -print) ]]"; then
     echo "### The file exists and is younger than 2 hours."
     echo "### Retrieve the key"

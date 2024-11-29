@@ -74,10 +74,6 @@ variable "vip_address" {
   default     = ""
 }
 
-variable "template_name" {
-  description = "The name of the vSphere VM template"
-  type        = string
-}
 
 variable "cpus" {
   description = "The number of CPUs for each master VM"
@@ -123,4 +119,8 @@ variable "gateway" {
 variable "domain" {
   description = "The domain name for the VMs"
   type        = string
+}
+
+variable "vsphere_host_name" {
+  description = "Host name of your esxi server"
 }

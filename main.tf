@@ -18,40 +18,73 @@ provider "vsphere" {
 
 provider "tls" {}
 
-# Data source for vSphere components
-data "vsphere_datacenter" "dc" {
+data "vsphere_datacenter" "datacenter" {
   name = var.datacenter_name
 }
 
-data "vsphere_resource_pool" "pool" {
+data "vsphere_resource_pool" "default" {
   name          = var.vsphere_resource_pool
-  datacenter_id = data.vsphere_datacenter.dc.id
+  datacenter_id = data.vsphere_datacenter.datacenter.id
 }
 
 data "vsphere_datastore" "datastore" {
   name          = var.datastore_name
-  datacenter_id = data.vsphere_datacenter.dc.id
+  datacenter_id = data.vsphere_datacenter.datacenter.id
 }
 
 data "vsphere_compute_cluster" "cluster" {
   name          = var.vsphere_cluster_name
-  datacenter_id = data.vsphere_datacenter.dc.id
+  datacenter_id = data.vsphere_datacenter.datacenter.id
 }
 
 data "vsphere_network" "network" {
   name          = var.network_name
-  datacenter_id = data.vsphere_datacenter.dc.id
+  datacenter_id = data.vsphere_datacenter.datacenter.id
 }
 
-data "vsphere_virtual_machine" "template" {
-  name          = var.template_name
-  datacenter_id = data.vsphere_datacenter.dc.id
+data "vsphere_host" "host" {
+  name          = var.vsphere_host_name
+  datacenter_id = data.vsphere_datacenter.datacenter.id
 }
 
-# SSH key generation for the cluster nodes
+data "vsphere_folder" "folder" {
+  path = "/${data.vsphere_datacenter.datacenter.name}/vm"
+}
+
+## Remote OVF/OVA Source
+data "vsphere_ovf_vm_template" "ovfRemote" {
+  name              = "foo"
+  disk_provisioning = "thin"
+  resource_pool_id  = data.vsphere_resource_pool.default.id
+  datastore_id      = data.vsphere_datastore.datastore.id
+  host_system_id    = data.vsphere_host.host.id
+  remote_ovf_url    = "https://cloud-images.ubuntu.com/noble/20241004/noble-server-cloudimg-amd64.ova"
+  ovf_network_map = {
+    "VM Network" : data.vsphere_network.network.id
+  }
+}
+
 resource "tls_private_key" "ssh_key" {
-  algorithm = "RSA"
-  rsa_bits  = 2048
+  algorithm = "ED25519"             # Specify the key algorithm (RSA, ECDSA, etc.)
+  #rsa_bits  = 2048              # Specify the key size (bits) for RSA keys
+
+  # Optional: Set the key's usage and exportability attributes
+  ecdsa_curve = "P521"         # For ECDSA keys, specify the curve type (P256, P384, P521, etc.)
+#  key_usage   = ["digitalSignature", "keyEncipherment", "serverAuth", "clientAuth"]
+#  private_key_openssh_output_path = "kube_ssh_key.pem"  # Specify the output path for the private key file (optional)
+
+  # Optional: Set additional attributes such as validity period and key type
+#  validity_period_hours = 12    # Specify the validity period for the key (hours)
+#  key_type = "SSH"              # Specify the key type (SSH, PGP, etc.)
+}
+
+resource "local_file" "cloud_pem" {
+  filename = "cloudtls.pem"
+  content = tls_private_key.ssh_key.private_key_openssh
+}
+resource "local_file" "cloud_pem_pub" {
+  filename = "cloudtls.pub"
+  content = tls_private_key.ssh_key.public_key_openssh
 }
 
 # Local variables
@@ -86,50 +119,62 @@ locals {
 
 # Main Master VM
 resource "vsphere_virtual_machine" "main_master" {
-  name          = local.main_master.hostname
-  datastore_id  = data.vsphere_datastore.datastore.id
-  resource_pool_id = data.vsphere_resource_pool.pool.id
-  num_cpus      = var.cpus
-  memory        = var.memory
-  guest_id      = data.vsphere_virtual_machine.template.guest_id
-  scsi_type     = data.vsphere_virtual_machine.template.scsi_type
-  firmware      = data.vsphere_virtual_machine.template.firmware
-  
-  network_interface {
-    network_id   = data.vsphere_network.network.id
-    adapter_type = "vmxnet3"
+  name            = local.main_master.hostname
+  folder          = trimprefix(data.vsphere_folder.folder.path, "/${data.vsphere_datacenter.datacenter.name}/vm")
+  datastore_id    = data.vsphere_datastore.datastore.id
+  datacenter_id   = data.vsphere_datacenter.datacenter.id
+  host_system_id  = data.vsphere_host.host.id
+  resource_pool_id = data.vsphere_resource_pool.default.id
+  num_cpus        = var.cpus
+  memory          = var.memory
+  num_cores_per_socket = data.vsphere_ovf_vm_template.ovfRemote.num_cores_per_socket
+  guest_id        = data.vsphere_ovf_vm_template.ovfRemote.guest_id
+  nested_hv_enabled = data.vsphere_ovf_vm_template.ovfRemote.nested_hv_enabled
+
+  dynamic "network_interface" {
+    for_each = data.vsphere_ovf_vm_template.ovfRemote.ovf_network_map
+    content {
+      network_id = network_interface.value
+    }
   }
 
-  disk {
-    label            = "disk0.vmdk"
-    size             = var.disk_size
-    unit_number      = 0
-    thin_provisioned = false
-  }
+  wait_for_guest_net_timeout = 0
+  wait_for_guest_ip_timeout  = 0
 
-  clone {
-    timeout       = "500"
-    template_uuid = data.vsphere_virtual_machine.template.id
+  ovf_deploy {
+    allow_unverified_ssl_cert = false
+    remote_ovf_url            = data.vsphere_ovf_vm_template.ovfRemote.remote_ovf_url
+    disk_provisioning         = data.vsphere_ovf_vm_template.ovfRemote.disk_provisioning
+    ovf_network_map           = data.vsphere_ovf_vm_template.ovfRemote.ovf_network_map
   }
-
+  cdrom {
+    client_device = true
+  }
   extra_config = {
-    "guestinfo.metadata" = base64encode(templatefile("${path.module}/meta-data.yaml", {
-      hostname    = local.main_master.hostname
-    }))
-    "guestinfo.metadata.encoding" = "base64"
-    "guestinfo.userdata" = base64encode(templatefile("${path.module}/user-data.sh", {
-      cluster_cidr    = var.cluster_cidr
-      vip_address     = var.vip_address
-      hostname        = local.main_master.hostname,
-      role            = "main_master",
-      main_master     = local.main_master.ip_address,
-      gateway         = var.gateway,
-      dns             = "8.8.8.8",
-      ip_address      = "${local.main_master.ip_address}/${local.subnet_prefix}",
-      private_ssh_key = tls_private_key.ssh_key.private_key_pem,
-      public_ssh_key  = tls_private_key.ssh_key.public_key_openssh
-    }))
-    "guestinfo.userdata.encoding" = "base64"
+    "disk.enableUUID"               = "TRUE"  # Ensure disk UUIDs are enabled for cloud-init
+  }
+  vapp {
+    properties = {
+      public-keys = tls_private_key.ssh_key.public_key_openssh
+      password = "ubuntu!12"
+      user-data =  base64encode(templatefile("${path.module}/user-data.sh", {
+        cluster_cidr    = var.cluster_cidr,
+        vip_address     = local.vip_address,
+        hostname        = local.main_master.hostname,
+        role            = "main_master",
+        main_master     = local.main_master.ip_address,
+        gateway         = var.gateway,
+        dns             = "8.8.8.8",
+        ip_address      = "${local.main_master.ip_address}/${local.subnet_prefix}",
+        private_ssh_key = tls_private_key.ssh_key.private_key_openssh,
+        public_ssh_key  = tls_private_key.ssh_key.public_key_openssh
+      }
+      ))
+    }
+  }
+
+  provisioner "local-exec" {
+    command = "chmod 400 cloudtls.pem"
   }
 }
 
@@ -137,137 +182,130 @@ resource "vsphere_virtual_machine" "main_master" {
 resource "vsphere_virtual_machine" "master" {
   for_each       = length(var.master_ips) > 1 ? local.additional_master_map : {}
   name           = each.value.hostname
-  datastore_id   = data.vsphere_datastore.datastore.id
-  resource_pool_id = data.vsphere_resource_pool.pool.id
-  num_cpus       = var.cpus
-  memory         = var.memory
-  guest_id       = data.vsphere_virtual_machine.template.guest_id
-  scsi_type      = data.vsphere_virtual_machine.template.scsi_type
-  firmware       = data.vsphere_virtual_machine.template.firmware
-  depends_on     = [vsphere_virtual_machine.main_master]
+  folder          = trimprefix(data.vsphere_folder.folder.path, "/${data.vsphere_datacenter.datacenter.name}/vm")
+  datastore_id    = data.vsphere_datastore.datastore.id
+  datacenter_id   = data.vsphere_datacenter.datacenter.id
+  host_system_id  = data.vsphere_host.host.id
+  resource_pool_id = data.vsphere_resource_pool.default.id
+  num_cpus        = var.cpus
+  memory          = var.memory
+  num_cores_per_socket = data.vsphere_ovf_vm_template.ovfRemote.num_cores_per_socket
+  guest_id        = data.vsphere_ovf_vm_template.ovfRemote.guest_id
+  nested_hv_enabled = data.vsphere_ovf_vm_template.ovfRemote.nested_hv_enabled
+  depends_on      = [vsphere_virtual_machine.main_master]
 
-  network_interface {
-    network_id   = data.vsphere_network.network.id
-    adapter_type = "vmxnet3"
+  dynamic "network_interface" {
+    for_each = data.vsphere_ovf_vm_template.ovfRemote.ovf_network_map
+    content {
+      network_id = network_interface.value
+    }
   }
 
-  disk {
-    label            = "disk0.vmdk"
-    size             = var.disk_size
-    unit_number      = 0
-    thin_provisioned = false
-  }
+  wait_for_guest_net_timeout = 0
+  wait_for_guest_ip_timeout  = 0
 
-  clone {
-    timeout       = "500"
-    template_uuid = data.vsphere_virtual_machine.template.id
+  ovf_deploy {
+    allow_unverified_ssl_cert = false
+    remote_ovf_url            = data.vsphere_ovf_vm_template.ovfRemote.remote_ovf_url
+    disk_provisioning         = data.vsphere_ovf_vm_template.ovfRemote.disk_provisioning
+    ovf_network_map           = data.vsphere_ovf_vm_template.ovfRemote.ovf_network_map
   }
-
+  cdrom {
+    client_device = true
+  }
   extra_config = {
-    "guestinfo.metadata" = base64encode(templatefile("${path.module}/meta-data.yaml", {
-      hostname    = each.value.hostname
-    }))
-    "guestinfo.metadata.encoding" = "base64"
-    "guestinfo.userdata" = base64encode(templatefile("${path.module}/user-data.sh", {
-      cluster_cidr    = var.cluster_cidr
-      vip_address     = var.vip_address
-      hostname        = each.value.hostname,
-      role            = "controller",
-      main_master     = local.main_master.ip_address,
-      gateway         = var.gateway,
-      dns             = "8.8.8.8",
-      ip_address      = "${each.value.ip_address}/${local.subnet_prefix}",
-      private_ssh_key = tls_private_key.ssh_key.private_key_pem,
-      public_ssh_key  = tls_private_key.ssh_key.public_key_openssh
-    }))
-    "guestinfo.userdata.encoding" = "base64"
+    "disk.enableUUID"               = "TRUE"  # Ensure disk UUIDs are enabled for cloud-init
+  }
+  vapp {
+    properties = {
+      public-keys = tls_private_key.ssh_key.public_key_openssh
+      password = "ubuntu!12"
+      user-data =  base64encode(templatefile("${path.module}/user-data.sh", {
+        cluster_cidr    = var.cluster_cidr,
+        vip_address     = local.vip_address,
+        hostname        = each.value.hostname,
+        role            = "master",
+        main_master     = local.main_master.ip_address,
+        gateway         = var.gateway,
+        dns             = "8.8.8.8",
+        ip_address      = "${each.value.ip_address}/${local.subnet_prefix}",
+        private_ssh_key = tls_private_key.ssh_key.private_key_openssh,
+        public_ssh_key  = tls_private_key.ssh_key.public_key_openssh
+      }
+      ))
+    }
+  }
+
+  provisioner "local-exec" {
+    command = "ssh-keygen -R 192.168.50.104"
+  }
+
+  provisioner "local-exec" {
+    command = "chmod 400 cloudtls.pem"
   }
 }
-
 
 # Worker VMs
 resource "vsphere_virtual_machine" "worker" {
   for_each        = local.worker_map
   name            = each.value.hostname
+  folder          = trimprefix(data.vsphere_folder.folder.path, "/${data.vsphere_datacenter.datacenter.name}/vm")
   datastore_id    = data.vsphere_datastore.datastore.id
-  resource_pool_id = data.vsphere_resource_pool.pool.id
-  num_cpus        = var.worker_cpus
-  memory          = var.worker_memory
-  guest_id        = data.vsphere_virtual_machine.template.guest_id
-  scsi_type       = data.vsphere_virtual_machine.template.scsi_type
-  firmware        = data.vsphere_virtual_machine.template.firmware
+  datacenter_id   = data.vsphere_datacenter.datacenter.id
+  host_system_id  = data.vsphere_host.host.id
+  resource_pool_id = data.vsphere_resource_pool.default.id
+  num_cpus        = var.cpus
+  memory          = var.memory
+  num_cores_per_socket = data.vsphere_ovf_vm_template.ovfRemote.num_cores_per_socket
+  guest_id        = data.vsphere_ovf_vm_template.ovfRemote.guest_id
+  nested_hv_enabled = data.vsphere_ovf_vm_template.ovfRemote.nested_hv_enabled
   depends_on      = [vsphere_virtual_machine.main_master]
 
-  network_interface {
-    network_id   = data.vsphere_network.network.id
-    adapter_type = "vmxnet3"
+  dynamic "network_interface" {
+    for_each = data.vsphere_ovf_vm_template.ovfRemote.ovf_network_map
+    content {
+      network_id = network_interface.value
+    }
   }
 
-  disk {
-    label            = "disk0.vmdk"
-    size             = var.worker_disk_size
-    unit_number      = 0
-    thin_provisioned = false
-  }
+  wait_for_guest_net_timeout = 0
+  wait_for_guest_ip_timeout  = 0
 
-  clone {
-    timeout       = "500"
-    template_uuid = data.vsphere_virtual_machine.template.id
+  ovf_deploy {
+    allow_unverified_ssl_cert = false
+    remote_ovf_url            = data.vsphere_ovf_vm_template.ovfRemote.remote_ovf_url
+    disk_provisioning         = data.vsphere_ovf_vm_template.ovfRemote.disk_provisioning
+    ovf_network_map           = data.vsphere_ovf_vm_template.ovfRemote.ovf_network_map
   }
-
+  cdrom {
+    client_device = true
+  }
   extra_config = {
-    "guestinfo.metadata" = base64encode(templatefile("${path.module}/meta-data.yaml", {
-      hostname    = each.value.hostname
-    }))
-    "guestinfo.metadata.encoding" = "base64"
-    "guestinfo.userdata" = base64encode(templatefile("${path.module}/user-data.sh", {
-      cluster_cidr    = var.cluster_cidr
-      vip_address     = var.vip_address
-      hostname        = each.value.hostname,
-      role            = "worker",
-      main_master     = local.main_master.ip_address,
-      gateway         = var.gateway,
-      dns             = "8.8.8.8",
-      ip_address      = "${each.value.ip_address}/${local.subnet_prefix}",
-      private_ssh_key = tls_private_key.ssh_key.private_key_pem,
-      public_ssh_key  = tls_private_key.ssh_key.public_key_openssh
-    }))
-    "guestinfo.userdata.encoding" = "base64"
+    "disk.enableUUID"               = "TRUE"  # Ensure disk UUIDs are enabled for cloud-init
   }
-}
-
-
-resource "local_file" "private_key" {
-  content  = tls_private_key.ssh_key.private_key_pem
-  filename = "${path.module}/private_key.pem"
-  file_permission = "0600"  # Ensure the key file has the correct permissions
-}
-
-resource "null_resource" "download_admin_conf" {
-  depends_on = [
-    vsphere_virtual_machine.main_master,
-    local_file.private_key  # Ensure the private key is written first
-  ]
+  vapp {
+    properties = {
+      public-keys = tls_private_key.ssh_key.public_key_openssh
+      password = "ubuntu!12"
+      user-data =  base64encode(templatefile("${path.module}/user-data.sh", {
+        cluster_cidr    = var.cluster_cidr,
+        vip_address     = local.vip_address,
+        hostname        = each.value.hostname,
+        role            = "worker",
+        main_master     = local.main_master.ip_address,
+        gateway         = var.gateway,
+        dns             = "8.8.8.8",
+        ip_address      = "${each.value.ip_address}/${local.subnet_prefix}",
+        private_ssh_key = tls_private_key.ssh_key.private_key_openssh,
+        public_ssh_key  = tls_private_key.ssh_key.public_key_openssh
+      }
+      ))
+    }
+  }
 
   provisioner "local-exec" {
-    command = <<EOT
-      scp -i ${local_file.private_key.filename} \
-      -o StrictHostKeyChecking=no \
-      root@${local.main_master.ip_address}:/etc/kubernetes/admin.conf ./admin.conf
-    EOT
+    command = "chmod 400 cloudtls.pem"
   }
-
-  connection {
-    type        = "ssh"
-    user        = "root"  # Adjust if you're using a different user
-    private_key = tls_private_key.ssh_key.private_key_pem
-    host        = local.main_master.ip_address
-  }
-}
-
-# Output the location of the admin.conf file
-output "admin_conf_location" {
-  value = "${path.module}/admin.conf"
 }
 
 

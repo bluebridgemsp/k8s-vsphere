@@ -21,6 +21,7 @@ module "vsphere_cluster" {
   datastore_name        = "CHANGE_ME"
   vsphere_resource_pool = "CHANGE_ME"
   vsphere_cluster_name  = "CHANGE_ME"              # "vSphere Compute Cluster" pavadinimas
+  vsphere_host_name     = "CHANGE_ME"
 
   # Kubernetes konfiguracija
   cluster_name          = "my_vsphere cluster"     # Kubernetes klasterio pavadinimas
