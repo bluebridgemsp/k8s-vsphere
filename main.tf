@@ -65,17 +65,7 @@ data "vsphere_ovf_vm_template" "ovfRemote" {
 }
 
 resource "tls_private_key" "ssh_key" {
-  algorithm = "ED25519"             # Specify the key algorithm (RSA, ECDSA, etc.)
-  #rsa_bits  = 2048              # Specify the key size (bits) for RSA keys
-
-  # Optional: Set the key's usage and exportability attributes
-  ecdsa_curve = "P521"         # For ECDSA keys, specify the curve type (P256, P384, P521, etc.)
-#  key_usage   = ["digitalSignature", "keyEncipherment", "serverAuth", "clientAuth"]
-#  private_key_openssh_output_path = "kube_ssh_key.pem"  # Specify the output path for the private key file (optional)
-
-  # Optional: Set additional attributes such as validity period and key type
-#  validity_period_hours = 12    # Specify the validity period for the key (hours)
-#  key_type = "SSH"              # Specify the key type (SSH, PGP, etc.)
+  algorithm = "ED25519"
 }
 
 resource "local_file" "cloud_pem" {
