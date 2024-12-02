@@ -71,10 +71,16 @@ resource "tls_private_key" "ssh_key" {
 resource "local_file" "cloud_pem" {
   filename = "cloudtls.pem"
   content = tls_private_key.ssh_key.private_key_openssh
+  provisioner "local-exec" {
+    command = "chmod 400 cloudtls.pem"
+  }
 }
 resource "local_file" "cloud_pem_pub" {
   filename = "cloudtls.pub"
   content = tls_private_key.ssh_key.public_key_openssh
+  provisioner "local-exec" {
+    command = "chmod 400 cloudtls.pub"
+  }
 }
 
 # Local variables
@@ -163,9 +169,6 @@ resource "vsphere_virtual_machine" "main_master" {
     }
   }
 
-  provisioner "local-exec" {
-    command = "chmod 400 cloudtls.pem"
-  }
 }
 
 # Additional Master VMs
@@ -224,14 +227,6 @@ resource "vsphere_virtual_machine" "master" {
       }
       ))
     }
-  }
-
-  provisioner "local-exec" {
-    command = "ssh-keygen -R 192.168.50.104"
-  }
-
-  provisioner "local-exec" {
-    command = "chmod 400 cloudtls.pem"
   }
 }
 
@@ -292,10 +287,45 @@ resource "vsphere_virtual_machine" "worker" {
       ))
     }
   }
-
-  provisioner "local-exec" {
-    command = "chmod 400 cloudtls.pem"
-  }
 }
 
+resource "null_resource" "download_admin_conf" {
+  depends_on = [
+    vsphere_virtual_machine.worker,
+    local_file.cloud_pem_pub  # Ensure the private key is written first
+  ]
+  provisioner "local-exec" {
+    command = "echo \"removing ald host\" && ssh-keygen -R ${local.main_master.ip_address}"
+  }
+  provisioner "local-exec" {
+    command = "echo \"adding ssh-agent\" && eval `ssh-agent -s`"
+  }
+  provisioner "local-exec" {
+    command = "echo \"adding private key\" && ssh-add cloudtls.pem"
+  }
+  provisioner "local-exec" {
+    command = <<EOT
+      echo "Waiting for admin.conf to appear..."
+      while ! ssh -i ${local_file.cloud_pem_pub.filename} \
+        -o StrictHostKeyChecking=no \
+        root@${local.main_master.ip_address} 'test -f /etc/kubernetes/admin.conf'; do
+          echo "admin.conf not found, retrying in 5 seconds..."
+          sleep 5
+      done
+      echo "admin.conf found, copying the file..."
+      scp -i ${local_file.cloud_pem_pub.filename} \
+        -o StrictHostKeyChecking=no \
+        root@${local.main_master.ip_address}:/etc/kubernetes/admin.conf ./admin.conf
+    EOT
+  }
 
+  provisioner "local-exec" {
+    command = "export KUBECONFIG=admin.conf"
+  }
+  connection {
+    type        = "ssh"
+    user        = "root"  # Adjust if you're using a different user
+    private_key = tls_private_key.ssh_key.private_key_pem
+    host        = local.main_master.ip_address
+  }
+}

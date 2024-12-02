@@ -53,7 +53,14 @@ module "vsphere_cluster" {
   network_name          = "VLAN_1"
 }
 
-
+---
 ## Modulio veikimas
 Modulis pagal nurodytus master ir worker nodes IP adresus sukuria atitinkamą kiekį VM'ų vsphere ir į juos sudiegia kubernetes klasterį. Visas konfiguravimas vyksta naudojant cloud-init, po diegimo visos klasterio mašinos turi sudėtus SSH raktus, todėl gali jungtis vienos į kitas per SSH. Modulis pats parsiunčia ir projekto kataloge patalpina kubeconfig failą, kurį naudojant galima valdyti klasterį.
 Klasterio diegimas vyksta naudojant kubeadm, sudiegiamas vanilla klasteris į kurį galite diegti savo norimus komponentus.
+
+---
+## Klasterio valdymas
+Moduliui suveikus be klaidų, kubernetes klasterio statusą galima patikrinti tiesiai iš terminalo kuriame leidote modulį:
+```
+kubectl get nodes
+```

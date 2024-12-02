@@ -44,10 +44,10 @@ ufw disable
 snap install go --classic
 
 echo "### Saving ssh keys"
-sudo echo "${public_ssh_key}" > /root/.ssh/authorized_keys
 sudo echo "${private_ssh_key}" > /root/.ssh/id_rsa
 sudo chmod 600 /root/.ssh/id_rsa
 sudo systemctl restart ssh
+sudo echo "${public_ssh_key}" > /root/.ssh/authorized_keys
 
 apt update
 apt full-upgrade -y
@@ -101,6 +101,7 @@ if [[ "$ROLE" == "main_master" ]]; then
   kubeadm token create --print-join-command | sudo tee $JOIN_COMMAND_FILE
 
   echo  "### Installing antrea"
+  export KUBECONFIG="/etc/kubernetes/admin.conf"
   kubectl apply -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/yamls/antrea.yml
 
   echo "### Restarting kubelet"
