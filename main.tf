@@ -58,7 +58,7 @@ data "vsphere_ovf_vm_template" "ovfRemote" {
   resource_pool_id  = data.vsphere_resource_pool.default.id
   datastore_id      = data.vsphere_datastore.datastore.id
   host_system_id    = data.vsphere_host.host.id
-  remote_ovf_url    = "https://cloud-images.ubuntu.com/noble/20241004/noble-server-cloudimg-amd64.ova"
+  remote_ovf_url    = "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.ova"
   ovf_network_map = {
     "VM Network" : data.vsphere_network.network.id
   }
