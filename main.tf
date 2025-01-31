@@ -5,6 +5,10 @@ terraform {
       source  = "hashicorp/vsphere"
       version = "~> 2.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }
 
@@ -16,7 +20,6 @@ provider "vsphere" {
   allow_unverified_ssl = true
 }
 
-provider "tls" {}
 
 data "vsphere_datacenter" "datacenter" {
   name = var.datacenter_name
@@ -64,6 +67,12 @@ data "vsphere_ovf_vm_template" "ovfRemote" {
   }
 }
 
+resource "random_password" "password" {
+  length           = 16
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
 resource "tls_private_key" "ssh_key" {
   algorithm = "ED25519"
 }
@@ -85,8 +94,8 @@ resource "local_file" "cloud_pem_pub" {
 
 # Local variables
 locals {
-  subnet_prefix = substr(var.subnet_cidr, length(split("/", var.subnet_cidr)[0]) + 1, 2)  
-  
+  subnet_prefix = substr(var.subnet_cidr, length(split("/", var.subnet_cidr)[0]) + 1, 2)
+
   # The first IP is assigned to the main master
   main_master = {
     hostname   = "${var.cluster_name}-main-master"
@@ -152,7 +161,7 @@ resource "vsphere_virtual_machine" "main_master" {
   vapp {
     properties = {
       public-keys = tls_private_key.ssh_key.public_key_openssh
-      password = "ubuntu!12"
+      password = random_password.password.result
       user-data =  base64encode(templatefile("${path.module}/user-data.sh", {
         cluster_cidr    = var.cluster_cidr,
         vip_address     = local.vip_address,
@@ -212,7 +221,7 @@ resource "vsphere_virtual_machine" "master" {
   vapp {
     properties = {
       public-keys = tls_private_key.ssh_key.public_key_openssh
-      password = "ubuntu!12"
+      password = random_password.password.result
       user-data =  base64encode(templatefile("${path.module}/user-data.sh", {
         cluster_cidr    = var.cluster_cidr,
         vip_address     = local.vip_address,
@@ -271,7 +280,7 @@ resource "vsphere_virtual_machine" "worker" {
   vapp {
     properties = {
       public-keys = tls_private_key.ssh_key.public_key_openssh
-      password = "ubuntu!12"
+      password = random_password.password.result
       user-data =  base64encode(templatefile("${path.module}/user-data.sh", {
         cluster_cidr    = var.cluster_cidr,
         vip_address     = local.vip_address,
@@ -292,39 +301,52 @@ resource "vsphere_virtual_machine" "worker" {
 resource "null_resource" "download_admin_conf" {
   depends_on = [
     vsphere_virtual_machine.worker,
-    local_file.cloud_pem_pub  # Ensure the private key is written first
+    local_file.cloud_pem  # Ensure the private key is written first
   ]
   provisioner "local-exec" {
     command = "echo \"removing ald host\" && ssh-keygen -R ${local.main_master.ip_address}"
   }
   provisioner "local-exec" {
-    command = "echo \"adding ssh-agent\" && eval `ssh-agent -s`"
+    command = "echo \"adding ssh-agent\" && eval \"$(ssh-agent -s)\" && ssh-add cloudtls.pem"
   }
-  provisioner "local-exec" {
-    command = "echo \"adding private key\" && ssh-add cloudtls.pem"
-  }
+#  provisioner "local-exec" {
+#    command = "echo \"adding private key\" && ssh-add cloudtls.pem"
+#  }
   provisioner "local-exec" {
     command = <<EOT
       echo "Waiting for admin.conf to appear..."
-      while ! ssh -i ${local_file.cloud_pem_pub.filename} \
-        -o StrictHostKeyChecking=no \
-        root@${local.main_master.ip_address} 'test -f /etc/kubernetes/admin.conf'; do
-          echo "admin.conf not found, retrying in 5 seconds..."
-          sleep 5
+      echo "removing ald host" && ssh-keygen -R ${local.main_master.ip_address}
+      while ! ssh -i ${local_file.cloud_pem.filename} \
+        -o StrictHostKeyChecking=no -o BatchMode=yes \
+        -o ServerAliveInterval=10 -o ServerAliveCountMax=1 \
+        ubuntu@${local.main_master.ip_address} 'test -f /etc/kubernetes/admin.conf'; do
+          echo "admin.conf not found, retrying in 10 seconds..."
+          ssh-keygen -R ${local.main_master.ip_address}
+          sleep 10
       done
       echo "admin.conf found, copying the file..."
-      scp -i ${local_file.cloud_pem_pub.filename} \
-        -o StrictHostKeyChecking=no \
-        root@${local.main_master.ip_address}:/etc/kubernetes/admin.conf ./admin.conf
+      ssh -i ${local_file.cloud_pem.filename} \
+          -o StrictHostKeyChecking=no \
+          ubuntu@${local.main_master.ip_address} 'sudo cp /etc/kubernetes/admin.conf /home/ubuntu && sudo chown ubuntu /home/ubuntu/admin.conf'
+      scp -i ${local_file.cloud_pem.filename} \
+          -o StrictHostKeyChecking=no \
+          ubuntu@${local.main_master.ip_address}:/home/ubuntu/admin.conf ./admin.conf
+      ssh -i ${local_file.cloud_pem.filename} \
+          -o StrictHostKeyChecking=no \
+          ubuntu@${local.main_master.ip_address} 'rm -f /home/ubuntu/admin.conf'
     EOT
   }
 
   provisioner "local-exec" {
     command = "export KUBECONFIG=admin.conf"
   }
+  provisioner "local-exec" {
+    command = "curl -LO \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && chmod 755 kubectl"
+  }
+
   connection {
     type        = "ssh"
-    user        = "root"  # Adjust if you're using a different user
+    user        = "ubuntu"  # Adjust if you're using a different user
     private_key = tls_private_key.ssh_key.private_key_pem
     host        = local.main_master.ip_address
   }
