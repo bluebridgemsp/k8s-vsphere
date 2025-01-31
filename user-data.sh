@@ -16,6 +16,11 @@ KEY_FILE=/root/key.txt
 echo "### Changing hostname"
 sudo hostnamectl set-hostname "$HOSTNAME"
 
+echo "### Changing ubuntu user password settings"
+passwd -x -1 ubuntu
+passwd -u ubuntu
+chage -d $(date +%Y-%m-%d) ubuntu
+
 echo "### Configuring network"
 rm -rf /etc/netplan/*
 cat > /etc/netplan/00-installer-config.yaml << EOF
@@ -109,49 +114,77 @@ if [[ "$ROLE" == "main_master" ]]; then
 
 fi
 
-if [[ "$ROLE" == "master" ]]; then
-  if ssh "$SERVER_USER@$MAIN_MASTER" "[[ -f \"$KEY_FILE\" ]] && [[ \$(find \"$KEY_FILE\" -mmin -120 -print) ]]"; then
-    echo "### The file exists and is younger than 2 hours."
-    echo "### Retrieve the key"
-    KEY=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $KEY_FILE")
-  else
-    echo "### The file does not exist or is not younger than 2 hours."
-    echo "### Generate new key"
-    ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "kubeadm init phase upload-certs --upload-certs | tail -n1 | tee $KEY_FILE"
-    KEY=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $KEY_FILE")
+if [[ "$ROLE" == "main_master" ]]; then
+  echo "### Initialize the Kubernetes cluster"
+  kubeadm init  --upload-certs --control-plane-endpoint "$VIP_ADDRESS:6443" --pod-network-cidr=$CIDR
+
+  echo "### Generate key file"
+  kubeadm init phase upload-certs --upload-certs | tail -n1 | tee $KEY_FILE
+
+  echo "### Generate join command file"
+  kubeadm token create --print-join-command | sudo tee $JOIN_COMMAND_FILE
+
+  echo  "### Installing antrea"
+  export KUBECONFIG="/etc/kubernetes/admin.conf"
+  kubectl apply -f https://raw.githubusercontent.com/antrea-io/antrea/main/build/yamls/antrea.yml
+
+  echo "### Restarting kubelet"
+  sudo systemctl restart kubelet.service
+
+else
+  echo "### Waiting for the master node to be fully installed"
+
+    while ! ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
+                -o ServerAliveInterval=10 -o ServerAliveCountMax=1 \
+                $SERVER_USER@$MAIN_MASTER 'test -f /etc/kubernetes/admin.conf'; do
+        echo "admin.conf not found, retrying in 10 seconds..."
+        sleep 10
+    done
+    echo "### admin.conf found, joining to master"
+
+
+  if [[ "$ROLE" == "master" ]]; then
+    if ssh -o StrictHostKeyChecking=no "$SERVER_USER@$MAIN_MASTER" "[[ -f \"$KEY_FILE\" ]] && [[ \$(find \"$KEY_FILE\" -mmin -120 -print) ]]"; then
+      echo "### The file exists and is younger than 2 hours."
+      echo "### Retrieve the key"
+      KEY=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $KEY_FILE")
+    else
+      echo "### The file does not exist or is not younger than 2 hours."
+      echo "### Generate new key"
+      ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "kubeadm init phase upload-certs --upload-certs | tail -n1 | tee $KEY_FILE"
+      KEY=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $KEY_FILE")
+    fi
+    if ssh -o StrictHostKeyChecking=no "$SERVER_USER@$MAIN_MASTER" "[[ -f \"$JOIN_COMMAND_FILE\" ]] && [[ \$(find \"$JOIN_COMMAND_FILE\" -mmin -120 -print) ]]"; then
+      echo "### The file exists and is younger than 2 hours."
+      echo "### Retrieve the join command"
+      JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
+    else
+      echo "### The file does not exist or is not younger than 2 hours."
+      echo "### Generate new join command"
+      ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "kubeadm token create --print-join-command | sudo tee $JOIN_COMMAND_FILE"
+      JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
+    fi
+    # Form the control plane join command
+    CONTROL_PLANE_JOIN_COMMAND="$JOIN_COMMAND --control-plane --certificate-key $KEY"
+
+    # Execute the join command
+    echo "Executing control plane join command... "
+    eval $CONTROL_PLANE_JOIN_COMMAND
+
+  elif [[ "$ROLE" == "worker" ]]; then
+    # Check if the join command file exists and is newer than 2 hours
+    if ssh -o StrictHostKeyChecking=no "$SERVER_USER@$MAIN_MASTER" "[[ -f \"$JOIN_COMMAND_FILE\" ]] && [[ \$(find \"$JOIN_COMMAND_FILE\" -mmin -120 -print) ]]"; then
+      echo "### The file exists and is younger than 2 hours."
+      echo "### Retrieve the join command"
+      JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
+    else
+      echo "### The file does not exist or is not younger than 2 hours."
+      echo "### Generate new join command"
+      ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "kubeadm token create --print-join-command | sudo tee $JOIN_COMMAND_FILE"
+      JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
+    fi
+    # Execute the join command
+    echo "Executing join command..."
+    eval $JOIN_COMMAND
   fi
-
-  if ssh "$SERVER_USER@$MAIN_MASTER" "[[ -f \"$JOIN_COMMAND_FILE\" ]] && [[ \$(find \"$JOIN_COMMAND_FILE\" -mmin -120 -print) ]]"; then
-    echo "### The file exists and is younger than 2 hours."
-    echo "### Retrieve the join command"
-    JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
-  else
-    echo "### The file does not exist or is not younger than 2 hours."
-    echo "### Generate new join command"
-    ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "kubeadm token create --print-join-command | sudo tee $JOIN_COMMAND_FILE"
-    JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
-  fi
-
-  # Form the control plane join command
-  CONTROL_PLANE_JOIN_COMMAND="$JOIN_COMMAND --control-plane --certificate-key $KEY"
-
-  # Execute the join command
-  echo "Executing control plane join command..."
-  eval $CONTROL_PLANE_JOIN_COMMAND
-elif [[ "$ROLE" == "worker" ]]; then
-  # Check if the join command file exists and is newer than 2 hours
-  if ssh "$SERVER_USER@$MAIN_MASTER" "[[ -f \"$JOIN_COMMAND_FILE\" ]] && [[ \$(find \"$JOIN_COMMAND_FILE\" -mmin -120 -print) ]]"; then
-    echo "### The file exists and is younger than 2 hours."
-    echo "### Retrieve the join command"
-    JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
-  else
-    echo "### The file does not exist or is not younger than 2 hours."
-    echo "### Generate new join command"
-    ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "kubeadm token create --print-join-command | sudo tee $JOIN_COMMAND_FILE"
-    JOIN_COMMAND=$(ssh -o StrictHostKeyChecking=no $SERVER_USER@$MAIN_MASTER "cat $JOIN_COMMAND_FILE")
-  fi
-
-  # Execute the join command
-  echo "Executing join command..."
-  eval $JOIN_COMMAND
 fi
